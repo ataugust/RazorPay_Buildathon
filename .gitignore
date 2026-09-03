@@ -1,0 +1,36 @@
+# Virtual Environments & Python Cache
+backend/venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Databases
+backend/data/*.db
+asc_database.db
+*.sqlite
+*.sqlite3
+
+# Node & Next.js
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# Environment & Secrets
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Executables & Binaries
+*.exe
+SmartBrowserInstaller.exe
+
+# OS & IDE junk
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
