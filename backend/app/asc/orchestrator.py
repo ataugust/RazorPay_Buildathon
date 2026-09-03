@@ -1,125 +1,140 @@
 import uuid
-from typing import Dict, Any, Tuple, Optional
-from sqlmodel import Session, select
-from app.db.database import engine
-from app.domain.models import BuyerRequest, Offer, MerchantPolicy, OfferStatus, EventStatus, AuditEvent
-from app.control_plane.engine import ControlPlaneEngine
-from app.asc.candidate_generator import CandidateGenerator
-from app.audit.service import AuditService
+from typing import Dict, Any, List, Optional
+from sqlalchemy import select
+from app.db.session import SessionLocal
+from app.db.models.product import Product
+from app.db.models.merchant_policy import MerchantPolicy
+from app.domain.models import BuyerRequest
+from app.asc.candidate_generators import (
+    VolumeDiscountGenerator,
+    OverstockBundleGenerator,
+    ProductSubstituteGenerator
+)
+from app.asc.scoring_engine import DeterministicScoringEngine
+from app.control_plane.control_plane_engine import ControlPlaneEngine
+from app.audit.audit_service import AuditService
 
 class ASCOrchestrator:
     def __init__(self):
         self.control_plane = ControlPlaneEngine()
-        self.audit_service = AuditService()
 
     def process_purchase_request(self, request: BuyerRequest) -> Dict[str, Any]:
         transaction_id = f"TXN-{uuid.uuid4().hex[:8].upper()}"
+        db = SessionLocal()
         
-        # Audit: Intent Received
-        self.audit_service.log_event(
-            transaction_id=transaction_id,
-            component="INTENT_PARSER",
-            event_type="INTENT_RECEIVED",
-            status=EventStatus.INFO,
-            message=f"Received purchase intent for {request.items[0].quantity}x {request.items[0].product_query} with budget ₹{request.max_budget_paise/100:,.2f}.",
-            metadata={"max_budget_paise": request.max_budget_paise}
-        )
-
-        # Get Merchant Policy
-        with Session(engine) as session:
-            policy = session.exec(select(MerchantPolicy)).first()
+        try:
+            # 1. Fetch Active Merchant Policy
+            policy = db.execute(select(MerchantPolicy).where(MerchantPolicy.policy_name == "default_policy")).scalar_one_or_none()
             if not policy:
                 policy = MerchantPolicy()
 
-        # Step 1: Direct Catalog Match Attempt
-        direct_offer = CandidateGenerator.generate_direct_offer(request, transaction_id)
-        if direct_offer:
-            passed, gate_results = self.control_plane.evaluate_offer(direct_offer, request, policy)
-            
-            # Log gate checks
-            for gr in gate_results:
-                self.audit_service.log_event(
-                    transaction_id=transaction_id,
-                    component="CONTROL_PLANE",
-                    event_type=f"GATE_CHECK_{gr.gate_name.upper()}",
-                    status=EventStatus.PASS if gr.passed else EventStatus.FAIL,
-                    message=gr.message,
-                    metadata=gr.metadata
-                )
+            main_item_req = request.items[0] if request.items else None
+            if not main_item_req:
+                return {"transaction_id": transaction_id, "status": "ERROR", "message": "No items requested"}
 
-            if passed:
-                direct_offer.status = OfferStatus.APPROVED
-                self.audit_service.log_event(
-                    transaction_id=transaction_id,
-                    component="ASC_ORCHESTRATOR",
-                    event_type="DIRECT_OFFER_APPROVED",
-                    status=EventStatus.PASS,
-                    message="Direct catalog match succeeded. Offer approved.",
-                    metadata={"offer_id": direct_offer.offer_id}
-                )
+            # Log Intent Received
+            max_budget_rupees = request.max_budget_paise // 100
+            AuditService.log_event(
+                db=db,
+                transaction_id=transaction_id,
+                component="INTENT_PARSER",
+                event_type="INTENT_RECEIVED",
+                status="INFO",
+                message=f"Received buyer prompt for {main_item_req.quantity}x {main_item_req.product_query} with budget cap Rs. {max_budget_rupees:,}.",
+                metadata={"max_budget_rupees": max_budget_rupees, "quantity": main_item_req.quantity}
+            )
+
+            # Query product from SQLite DB
+            product = db.execute(
+                select(Product).where(Product.name.contains(main_item_req.product_query))
+            ).first()
+
+            if not product:
                 return {
                     "transaction_id": transaction_id,
                     "rescued": False,
-                    "offer": direct_offer,
-                    "gate_results": gate_results
+                    "message": f"Product '{main_item_req.product_query}' not found in merchant catalog."
                 }
 
-        # Step 2: Direct Match Failed -> Transaction At Risk -> ASC Activates
-        self.audit_service.log_event(
-            transaction_id=transaction_id,
-            component="ASC_ORCHESTRATOR",
-            event_type="TRANSACTION_AT_RISK",
-            status=EventStatus.WARN,
-            message="Direct catalog offer failed buyer budget constraints. Transaction at risk! Activating ASC rescue engine.",
-            metadata={}
-        )
+            # Direct Match Check
+            catalog_total_rupees = product.selling_price_rupees * main_item_req.quantity
+            direct_match_success = (catalog_total_rupees <= max_budget_rupees) and (product.stock_quantity >= main_item_req.quantity)
 
-        # Step 3: Generate Candidate Counteroffers
-        candidates = CandidateGenerator.generate_candidate_counteroffers(request, transaction_id, policy)
-        
-        for candidate in candidates:
-            passed, gate_results = self.control_plane.evaluate_offer(candidate, request, policy)
-            
-            for gr in gate_results:
-                self.audit_service.log_event(
-                    transaction_id=transaction_id,
-                    component="CONTROL_PLANE",
-                    event_type=f"GATE_CHECK_{gr.gate_name.upper()}",
-                    status=EventStatus.PASS if gr.passed else EventStatus.FAIL,
-                    message=f"[Candidate {candidate.strategy}] {gr.message}",
-                    metadata=gr.metadata
-                )
-
-            if passed:
-                candidate.status = OfferStatus.APPROVED
-                self.audit_service.log_event(
+            if not direct_match_success:
+                AuditService.log_event(
+                    db=db,
                     transaction_id=transaction_id,
                     component="ASC_ORCHESTRATOR",
-                    event_type="TRANSACTION_RESCUED",
-                    status=EventStatus.PASS,
-                    message=f"Transaction successfully rescued using strategy {candidate.strategy}!",
-                    metadata={"offer_id": candidate.offer_id, "strategy": candidate.strategy}
+                    event_type="TRANSACTION_AT_RISK",
+                    status="WARN",
+                    message=f"Direct match failed (Catalog Rs. {catalog_total_rupees:,} > Budget Rs. {max_budget_rupees:,}). Transaction at risk! Activating ASC Strategy Engine.",
+                    metadata={"catalog_total_rupees": catalog_total_rupees, "max_budget_rupees": max_budget_rupees}
                 )
+
+            # 2. Generate Candidate Counteroffer Strategies
+            candidates = []
+            cand_vol = VolumeDiscountGenerator.generate(db, product, main_item_req.quantity, max_budget_rupees, policy)
+            if cand_vol:
+                candidates.append(cand_vol)
+
+            cand_bnd = OverstockBundleGenerator.generate(db, product, main_item_req.quantity, max_budget_rupees, policy)
+            if cand_bnd:
+                candidates.append(cand_bnd)
+
+            cand_sub = ProductSubstituteGenerator.generate(db, product, main_item_req.quantity, max_budget_rupees, policy)
+            if cand_sub:
+                candidates.append(cand_sub)
+
+            if not candidates:
                 return {
                     "transaction_id": transaction_id,
-                    "rescued": True,
-                    "offer": candidate,
-                    "gate_results": gate_results
+                    "rescued": False,
+                    "message": "No candidate counteroffers could be generated."
                 }
 
-        # Step 4: Graceful Impossible Deal Handling
-        self.audit_service.log_event(
-            transaction_id=transaction_id,
-            component="ASC_ORCHESTRATOR",
-            event_type="DEAL_IMPOSSIBLE",
-            status=EventStatus.FAIL,
-            message="No candidate offer satisfied both buyer constraints and merchant profit policies. Prioritizing merchant safety over bad sale.",
-            metadata={}
-        )
+            # 3. Deterministic Scoring & Ranking
+            ranked_offers = DeterministicScoringEngine.rank_candidates(candidates, max_budget_rupees, policy)
+            best_scored_offer = ranked_offers[0]
 
-        return {
-            "transaction_id": transaction_id,
-            "rescued": False,
-            "offer": None,
-            "message": "Impossible deal. Deal rejected gracefully to protect merchant profitability."
-        }
+            # 4. Evaluate Winning Candidate across 6 Control Plane Gates
+            buyer_spec_requirements = {"min_ram_gb": 16, "min_cpu_tier": "i5", "min_storage_gb": 512}
+            mandate = {
+                "max_amount": max_budget_rupees,
+                "allowed_categories": ["LAPTOP", "ACCESSORY", "MONITOR"],
+                "expires_at": "2028-12-31T23:59:59Z",
+                "transaction_id": transaction_id
+            }
+
+            passed_all_gates, gate_results = self.control_plane.evaluate_candidate(
+                db=db,
+                transaction_id=transaction_id,
+                candidate=best_scored_offer.candidate,
+                max_budget_rupees=max_budget_rupees,
+                policy=policy,
+                buyer_spec_requirements=buyer_spec_requirements,
+                mandate=mandate
+            )
+
+            # Format response for frontend
+            formatted_offer = {
+                "offer_id": best_scored_offer.candidate.candidate_id,
+                "transaction_id": transaction_id,
+                "strategy": best_scored_offer.candidate.strategy.value,
+                "explanation": best_scored_offer.candidate.explanation,
+                "total_price_paise": best_scored_offer.candidate.total_price_rupees * 100,
+                "margin_percent": best_scored_offer.candidate.margin_percent,
+                "discount_percent": best_scored_offer.candidate.discount_percent,
+                "final_score": best_scored_offer.final_score,
+                "items": [item.model_dump() for item in best_scored_offer.candidate.items]
+            }
+
+            return {
+                "transaction_id": transaction_id,
+                "rescued": passed_all_gates,
+                "offer": formatted_offer if passed_all_gates else None,
+                "gate_results": [g.model_dump() for g in gate_results],
+                "message": "Transaction rescued successfully!" if passed_all_gates else "Transaction rejected by Control Plane."
+            }
+
+        finally:
+            db.close()

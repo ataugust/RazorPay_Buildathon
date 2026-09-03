@@ -4,7 +4,7 @@ import React, { useState } from 'react';
 import { ShieldCheck, Cpu, ArrowRight, Zap, CheckCircle2, AlertTriangle, AlertCircle, ShoppingBag } from 'lucide-react';
 
 export default function Home() {
-  const [prompt, setPrompt] = useState("Order 20 Lenovo IdeaPad laptops with a maximum budget of ₹25L.");
+  const [prompt, setPrompt] = useState("Order 20 Lenovo IdeaPad laptops with a maximum budget of Rs. 24L.");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
 
@@ -21,7 +21,7 @@ export default function Home() {
       setResult(data);
     } catch (err) {
       console.error(err);
-      alert("Error connecting to ASC backend at http://localhost:8000");
+      alert("Error connecting to ASC backend at http://localhost:8000. Ensure uvicorn backend is running!");
     } finally {
       setLoading(false);
     }
@@ -72,7 +72,7 @@ export default function Home() {
           className="w-full md:w-auto px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-semibold text-sm rounded-lg transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-900/30 disabled:opacity-50"
         >
           {loading ? (
-            <span>Executing Negotiation...</span>
+            <span>Evaluating 6 Gates...</span>
           ) : (
             <>
               <Zap className="w-4 h-4" />
@@ -104,7 +104,7 @@ export default function Home() {
               <div className="p-4 bg-slate-950 rounded-lg border border-slate-800">
                 <div className="text-xs font-mono text-blue-400 mb-1">BUYER REQUEST PARSED</div>
                 <div className="text-sm font-semibold">{result.parsed_request?.items[0]?.quantity}x {result.parsed_request?.items[0]?.product_query}</div>
-                <div className="text-xs text-slate-400 mt-1">Max Authorized Budget: ₹{(result.parsed_request?.max_budget_paise / 100).toLocaleString('en-IN')}</div>
+                <div className="text-xs text-slate-400 mt-1">Max Authorized Budget: Rs. {(result.parsed_request?.max_budget_paise / 100).toLocaleString('en-IN')}</div>
               </div>
 
               <div className="flex justify-center my-1">
@@ -115,16 +115,18 @@ export default function Home() {
                 <div className="flex justify-between items-start mb-2">
                   <span className="text-xs font-mono text-emerald-400">MERCHANT ASC COUNTEROFFER</span>
                   {result.result?.rescued && (
-                    <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 text-[10px] rounded border border-emerald-500/40">
-                      RESCUED DEAL
+                    <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 text-[10px] rounded border border-emerald-500/40 font-mono">
+                      RESCUED DEAL ({result.result.offer?.strategy})
                     </span>
                   )}
                 </div>
                 {result.result?.offer ? (
                   <div>
                     <div className="text-sm font-semibold text-slate-200">{result.result.offer.explanation}</div>
-                    <div className="text-xs text-slate-400 mt-2 font-mono">
-                      Offer Total: ₹{(result.result.offer.total_price_paise / 100).toLocaleString('en-IN')} | Profit Margin: {result.result.offer.margin_percent}%
+                    <div className="text-xs text-slate-400 mt-2 font-mono flex gap-4">
+                      <span>Counteroffer Total: Rs. {(result.result.offer.total_price_paise / 100).toLocaleString('en-IN')}</span>
+                      <span>Profit Margin: {result.result.offer.margin_percent}%</span>
+                      <span>Score: {result.result.offer.final_score}/100</span>
                     </div>
                   </div>
                 ) : (
@@ -151,40 +153,50 @@ export default function Home() {
           {!result ? (
             <div className="h-96 flex flex-col items-center justify-center text-slate-500 border border-dashed border-slate-800 rounded-lg p-6 text-center">
               <ShieldCheck className="w-12 h-12 mb-3 text-slate-600 stroke-1" />
-              <p className="text-sm">Gate checks (BudgetGate, MarginGate, InventoryGate, PolicyGate, MandateGate) will display here in real-time.</p>
+              <p className="text-sm">The 6 Control Plane Gate checks (MarginGate, InventoryGate, BudgetGate, DiscountGate, SpecificationGate, MandateGate) will display here in real-time.</p>
             </div>
           ) : (
             <div className="flex flex-col gap-3 max-h-96 overflow-y-auto pr-1">
               <div className="p-3 bg-slate-950 rounded border border-blue-900/40 text-xs font-mono flex items-center justify-between">
-                <span className="text-blue-400">TRUST BOUNDARY: PROPOSAL EVALUATION</span>
+                <span className="text-blue-400">TRUST BOUNDARY: 6 GATES EVALUATION</span>
                 <span className="text-slate-400">{result.result?.transaction_id}</span>
               </div>
 
-              {result.result?.gate_results?.map((gate: any, idx: number) => (
-                <div
-                  key={idx}
-                  className={`p-3 rounded-lg border text-xs flex items-start justify-between gap-3 ${
-                    gate.passed
-                      ? 'bg-slate-950/80 border-slate-800 text-slate-300'
-                      : 'bg-rose-950/20 border-rose-900/50 text-rose-300'
-                  }`}
-                >
-                  <div className="flex items-start gap-2.5">
-                    {gate.passed ? (
-                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                    ) : (
-                      <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
-                    )}
-                    <div>
-                      <div className="font-mono font-semibold text-slate-200">{gate.gate_name}</div>
-                      <div className="mt-0.5 text-slate-400">{gate.message}</div>
+              {result.result?.gate_results?.map((gate: any, idx: number) => {
+                const isPass = gate.status === "PASS" || gate.passed === true;
+                const gateName = gate.gate || gate.gate_name;
+                return (
+                  <div
+                    key={idx}
+                    className={`p-3 rounded-lg border text-xs flex items-start justify-between gap-3 ${
+                      isPass
+                        ? 'bg-slate-950/80 border-slate-800 text-slate-300'
+                        : 'bg-rose-950/20 border-rose-900/50 text-rose-300'
+                    }`}
+                  >
+                    <div className="flex items-start gap-2.5">
+                      {isPass ? (
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                      ) : (
+                        <AlertCircle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                      )}
+                      <div>
+                        <div className="font-mono font-semibold text-slate-200">{gateName}</div>
+                        <div className="mt-0.5 text-slate-400">{gate.reason || gate.message}</div>
+                        {gate.expected && (
+                          <div className="mt-1 font-mono text-[11px] text-slate-500 flex gap-3">
+                            <span>Expected: {gate.expected}</span>
+                            <span>Actual: {gate.actual}</span>
+                          </div>
+                        )}
+                      </div>
                     </div>
+                    <span className={`px-2 py-0.5 text-[10px] font-mono rounded shrink-0 ${isPass ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 'bg-rose-950 text-rose-300 border border-rose-800'}`}>
+                      {isPass ? 'PASS' : 'FAIL'}
+                    </span>
                   </div>
-                  <span className={`px-2 py-0.5 text-[10px] font-mono rounded ${gate.passed ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 'bg-rose-950 text-rose-300 border border-rose-800'}`}>
-                    {gate.passed ? 'PASS' : 'FAIL'}
-                  </span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>
