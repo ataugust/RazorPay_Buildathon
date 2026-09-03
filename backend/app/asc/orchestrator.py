@@ -24,7 +24,7 @@ class ASCOrchestrator:
         
         try:
             # 1. Fetch Active Merchant Policy
-            policy = db.execute(select(MerchantPolicy).where(MerchantPolicy.policy_name == "default_policy")).scalar_one_or_none()
+            policy = db.scalars(select(MerchantPolicy).where(MerchantPolicy.policy_name == "default_policy")).first()
             if not policy:
                 policy = MerchantPolicy()
 
@@ -44,8 +44,8 @@ class ASCOrchestrator:
                 metadata={"max_budget_rupees": max_budget_rupees, "quantity": main_item_req.quantity}
             )
 
-            # Query product from SQLite DB
-            product = db.execute(
+            # Query product from SQLite DB using db.scalars() for model instance
+            product = db.scalars(
                 select(Product).where(Product.name.contains(main_item_req.product_query))
             ).first()
 
