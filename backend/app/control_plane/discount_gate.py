@@ -5,10 +5,10 @@ from app.control_plane.gate_result import GateResult
 from app.domain.strategy_types import OfferCandidate
 from app.db.models.merchant_policy import MerchantPolicy
 
-class BudgetGate(BaseGate):
+class DiscountGate(BaseGate):
     @property
     def name(self) -> str:
-        return "BUDGET_GATE"
+        return "DISCOUNT_GATE"
 
     def evaluate(
         self,
@@ -19,17 +19,17 @@ class BudgetGate(BaseGate):
         buyer_spec_requirements: Optional[Dict[str, Any]] = None,
         mandate: Optional[Dict[str, Any]] = None,
     ) -> GateResult:
-        expected_str = f"<= Rs. {max_budget_rupees:,}"
-        actual_str = f"Rs. {candidate.total_price_rupees:,}"
+        expected_str = f"<= {policy.max_discount_percent}%"
+        actual_str = f"{candidate.discount_percent:.2f}%"
 
-        if candidate.total_price_rupees <= max_budget_rupees:
+        if candidate.discount_percent <= policy.max_discount_percent:
             return GateResult(
                 gate=self.name,
                 status="PASS",
                 expected=expected_str,
                 actual=actual_str,
-                reason=f"Offer total ({actual_str}) fits within buyer maximum budget ({expected_str}).",
-                metadata={"total_price_rupees": candidate.total_price_rupees, "max_budget_rupees": max_budget_rupees}
+                reason=f"Candidate discount ({actual_str}) is within permitted merchant policy cap ({expected_str}).",
+                metadata={"discount_percent": candidate.discount_percent, "max_discount_percent": policy.max_discount_percent}
             )
         else:
             return GateResult(
@@ -37,6 +37,6 @@ class BudgetGate(BaseGate):
                 status="FAIL",
                 expected=expected_str,
                 actual=actual_str,
-                reason=f"Offer total ({actual_str}) exceeds buyer maximum budget cap ({expected_str}).",
-                metadata={"total_price_rupees": candidate.total_price_rupees, "max_budget_rupees": max_budget_rupees}
+                reason=f"Candidate discount ({actual_str}) exceeds permitted merchant policy maximum ({expected_str}).",
+                metadata={"discount_percent": candidate.discount_percent, "max_discount_percent": policy.max_discount_percent}
             )

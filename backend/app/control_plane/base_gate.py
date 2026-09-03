@@ -1,13 +1,9 @@
 from abc import ABC, abstractmethod
-from typing import Tuple, Dict, Any
-from app.domain.models import BuyerRequest, Offer, MerchantPolicy
-
-class GateResult:
-    def __init__(self, passed: bool, gate_name: str, message: str, metadata: Dict[str, Any] = None):
-        self.passed = passed
-        self.gate_name = gate_name
-        self.message = message
-        self.metadata = metadata or {}
+from typing import Optional, Dict, Any
+from sqlalchemy.orm import Session
+from app.control_plane.gate_result import GateResult
+from app.domain.strategy_types import OfferCandidate
+from app.db.models.merchant_policy import MerchantPolicy
 
 class BaseGate(ABC):
     @property
@@ -16,5 +12,13 @@ class BaseGate(ABC):
         pass
 
     @abstractmethod
-    def evaluate(self, offer: Offer, request: BuyerRequest, policy: MerchantPolicy) -> GateResult:
+    def evaluate(
+        self,
+        db: Session,
+        candidate: OfferCandidate,
+        max_budget_rupees: int,
+        policy: MerchantPolicy,
+        buyer_spec_requirements: Optional[Dict[str, Any]] = None,
+        mandate: Optional[Dict[str, Any]] = None,
+    ) -> GateResult:
         pass

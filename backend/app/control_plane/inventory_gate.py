@@ -1,89 +1,53 @@
-from app.control_plane.base_gate import BaseGate, GateResult
-from app.domain.models import BuyerRequest, Offer, MerchantPolicy, Product
-from sqlmodel import Session, select
-from app.db.database import engine
+from typing import Optional, Dict, Any
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+from app.control_plane.base_gate import BaseGate
+from app.control_plane.gate_result import GateResult
+from app.domain.strategy_types import OfferCandidate
+from app.db.models.merchant_policy import MerchantPolicy
+from app.db.models.product import Product
 
 class InventoryGate(BaseGate):
     @property
     def name(self) -> str:
-        return "InventoryGate"
+        return "INVENTORY_GATE"
 
-    def evaluate(self, offer: Offer, request: BuyerRequest, policy: MerchantPolicy) -> GateResult:
-        with Session(engine) as session:
-            for item in offer.items_json:
-                sku = item.get("sku")
-                requested_qty = item.get("quantity", 0)
-                product = session.exec(select(Product).where(Product.sku == sku)).first()
-                
-                if not product:
-                    return GateResult(
-                        passed=False,
-                        gate_name=self.name,
-                        message=f"Product with SKU {sku} does not exist in merchant catalog.",
-                        metadata={"sku": sku}
-                    )
-                if product.stock < requested_qty:
-                    return GateResult(
-                        passed=False,
-                        gate_name=self.name,
-                        message=f"Insufficient stock for {product.name} (SKU: {sku}). Requested: {requested_qty}, Available: {product.stock}.",
-                        metadata={"sku": sku, "requested_stock": requested_qty, "available_stock": product.stock}
-                    )
+    def evaluate(
+        self,
+        db: Session,
+        candidate: OfferCandidate,
+        max_budget_rupees: int,
+        policy: MerchantPolicy,
+        buyer_spec_requirements: Optional[Dict[str, Any]] = None,
+        mandate: Optional[Dict[str, Any]] = None,
+    ) -> GateResult:
+        for item in candidate.items:
+            product = db.execute(select(Product).where(Product.sku == item.sku)).scalar_one_or_none()
+            if not product:
+                return GateResult(
+                    gate=self.name,
+                    status="FAIL",
+                    expected=f"SKU {item.sku} exists in catalog",
+                    actual="SKU Not Found",
+                    reason=f"Product with SKU '{item.sku}' does not exist in inventory.",
+                    metadata={"sku": item.sku}
+                )
 
-        return GateResult(
-            passed=True,
-            gate_name=self.name,
-            message="All offered items are available in inventory.",
-            metadata={"items_count": len(offer.items_json)}
-        )
-
-class PolicyGate(BaseGate):
-    @property
-    def name(self) -> str:
-        return "PolicyGate"
-
-    def evaluate(self, offer: Offer, request: BuyerRequest, policy: MerchantPolicy) -> GateResult:
-        # Check discount ceiling constraints if applicable
-        if not policy.allow_discounts and offer.strategy == "DISCOUNT":
-            return GateResult(
-                passed=False,
-                gate_name=self.name,
-                message="Discounts are disabled under current merchant policy.",
-                metadata={"allow_discounts": False}
-            )
-        
-        if not policy.allow_bundles and offer.strategy == "BUNDLE_OVERSTOCK":
-            return GateResult(
-                passed=False,
-                gate_name=self.name,
-                message="Bundles are disabled under current merchant policy.",
-                metadata={"allow_bundles": False}
-            )
+            if item.quantity > product.stock_quantity:
+                return GateResult(
+                    gate=self.name,
+                    status="FAIL",
+                    expected=f"Stock >= {item.quantity}",
+                    actual=f"Stock = {product.stock_quantity}",
+                    reason=f"Insufficient inventory stock for {product.name} (SKU: {item.sku}). Requested: {item.quantity}, Available: {product.stock_quantity}.",
+                    metadata={"sku": item.sku, "requested": item.quantity, "available": product.stock_quantity}
+                )
 
         return GateResult(
-            passed=True,
-            gate_name=self.name,
-            message="Offer complies with all merchant policy constraints.",
-            metadata={"policy_name": policy.name}
-        )
-
-class MandateGate(BaseGate):
-    @property
-    def name(self) -> str:
-        return "MandateGate"
-
-    def evaluate(self, offer: Offer, request: BuyerRequest, policy: MerchantPolicy) -> GateResult:
-        # Validate purchase mandate bounds
-        if request.mandate_id and request.mandate_id.startswith("EXPIRED"):
-            return GateResult(
-                passed=False,
-                gate_name=self.name,
-                message=f"Purchase mandate {request.mandate_id} has expired.",
-                metadata={"mandate_id": request.mandate_id}
-            )
-        return GateResult(
-            passed=True,
-            gate_name=self.name,
-            message="Buyer purchase authorization mandate is valid.",
-            metadata={"mandate_id": request.mandate_id or "DEFAULT_DEMO_MANDATE"}
+            gate=self.name,
+            status="PASS",
+            expected="All offered items in stock",
+            actual="In Stock",
+            reason="All offered line items are verified in stock.",
+            metadata={"items_checked": len(candidate.items)}
         )
