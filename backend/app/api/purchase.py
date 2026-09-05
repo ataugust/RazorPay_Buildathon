@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
-from app.domain.models import BuyerRequest
+from pydantic import BaseModel, Field
+from app.domain.schemas import BuyerRequest
 from app.asc.intent_parser import IntentParser
 from app.asc.orchestrator import ASCOrchestrator
 from app.payments.base import MockPaymentProvider
@@ -10,7 +10,7 @@ orchestrator = ASCOrchestrator()
 payment_provider = MockPaymentProvider()
 
 class NaturalLanguagePurchasePayload(BaseModel):
-    prompt: str
+    prompt: str = Field(min_length=3, max_length=4000)
 
 @router.post("/request")
 def process_purchase_request(request: BuyerRequest):
@@ -21,10 +21,11 @@ def process_purchase_request(request: BuyerRequest):
 @router.post("/prompt")
 def process_natural_language_prompt(payload: NaturalLanguagePurchasePayload):
     """Parses natural language purchase intent and executes ASC transaction engine."""
-    buyer_request = IntentParser.parse_natural_language(payload.prompt)
-    result = orchestrator.process_purchase_request(buyer_request)
+    buyer_request, intelligence = IntentParser.parse_with_intelligence(payload.prompt)
+    result = orchestrator.process_purchase_request(buyer_request, intelligence)
     return {
         "parsed_request": buyer_request,
+        "intelligence": intelligence,
         "result": result
     }
 

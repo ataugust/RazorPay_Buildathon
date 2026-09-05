@@ -9,6 +9,7 @@ __pycache__/
 
 # Databases
 backend/data/*.db
+backend/data/**/*.db
 asc_database.db
 *.sqlite
 *.sqlite3
@@ -34,3 +35,12 @@ SmartBrowserInstaller.exe
 Thumbs.db
 .vscode/
 .idea/
+# Local merchant sign-in secret
+backend/data/merchant-access.txt
+
+# Logs
+*.log
+
+# Build outputs & caches
+*.tsbuildinfo
+

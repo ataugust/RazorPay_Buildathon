@@ -1,8 +1,11 @@
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 # Absolute path resolution anchored to the backend directory
 BACKEND_DIR = Path(__file__).resolve().parent.parent.parent
+load_dotenv(BACKEND_DIR / ".env")
 DATA_DIR = BACKEND_DIR / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 

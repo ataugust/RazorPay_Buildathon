@@ -1,14 +1,24 @@
-import os
-from sqlmodel import SQLModel, create_engine, Session
+"""Deprecated compatibility layer for the former SQLModel database module.
 
-DB_PATH = os.getenv("DATABASE_URL", "sqlite:///./asc_database.db")
-connect_args = {"check_same_thread": False} if DB_PATH.startswith("sqlite") else {}
+New code must import ``engine`` and ``get_db`` from :mod:`app.db.session` and
+use Alembic via :mod:`app.db.bootstrap` for schema management.
+"""
 
-engine = create_engine(DB_PATH, echo=False, connect_args=connect_args)
+import warnings
 
-def init_db():
-    SQLModel.metadata.create_all(engine)
+from app.db.bootstrap import run_migrations
+from app.db.session import engine, get_db
 
-def get_session():
-    with Session(engine) as session:
-        yield session
+
+def init_db() -> None:
+    warnings.warn(
+        "app.db.database.init_db is deprecated; use app.db.bootstrap.run_migrations",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    run_migrations()
+
+
+get_session = get_db
+
+__all__ = ["engine", "get_db", "get_session", "init_db"]

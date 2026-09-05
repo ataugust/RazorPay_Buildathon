@@ -13,8 +13,8 @@ from app.db.models.merchant_policy import MerchantPolicy
 DEFAULT_POLICIES = [
     {
         "policy_name": "default_policy",
-        "min_margin_percent": 15.0,        # Minimum 15% profit floor
-        "max_discount_percent": 20.0,      # Max 20% discount ceiling
+        "min_margin_percent": 12.0,        # Demo merchant profit floor
+        "max_discount_percent": 15.0,      # Demo merchant discount ceiling
         "allow_bundles": True,
         "allow_substitutions": True,
         "weight_margin": 0.4,
@@ -25,7 +25,7 @@ DEFAULT_POLICIES = [
     }
 ]
 
-def seed_policies():
+def seed_policies(update_existing=True):
     db = SessionLocal()
     try:
         created = 0
@@ -35,9 +35,10 @@ def seed_policies():
             existing = db.execute(select(MerchantPolicy).where(MerchantPolicy.policy_name == name)).scalar_one_or_none()
 
             if existing:
-                for k, v in policy_data.items():
-                    setattr(existing, k, v)
-                updated += 1
+                if update_existing:
+                    for k, v in policy_data.items():
+                        setattr(existing, k, v)
+                    updated += 1
             else:
                 policy = MerchantPolicy(**policy_data)
                 db.add(policy)

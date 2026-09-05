@@ -66,6 +66,10 @@ class SpecificationGate(BaseGate):
                 )
 
             # CPU tier check (e.g. i5 vs i3)
+            if required_cpu_tier:
+                from app.asc.catalog_search import cpu_matches
+                if not cpu_matches(product, required_cpu_tier):
+                    return GateResult(gate=self.name, status="FAIL", expected=required_cpu_tier, actual=product.cpu_tier or "Unknown", reason="The processor does not meet the requested family and tier.")
             if required_cpu_tier and product.cpu_tier:
                 # Basic hierarchy check (i7 > i5 > i3)
                 tier_rank = {"i3": 1, "i5": 2, "i7": 3, "i9": 4}

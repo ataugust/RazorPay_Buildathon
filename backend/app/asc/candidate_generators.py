@@ -1,10 +1,144 @@
 import uuid
+import math
+from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from app.db.models.product import Product
 from app.db.models.merchant_policy import MerchantPolicy
 from app.domain.strategy_types import AllowedStrategy, OfferCandidate, OfferItemDetail
+
+class DirectMatchGenerator:
+    """Builds a catalog-price offer when stock and budget already permit it."""
+
+    @staticmethod
+    def generate(
+        db: Session,
+        requested_product: Product,
+        quantity: int,
+        max_budget_rupees: int,
+        policy: MerchantPolicy,
+    ) -> Optional[OfferCandidate]:
+        total_price = requested_product.selling_price_rupees * quantity
+        total_cost = requested_product.cost_price_rupees * quantity
+        if requested_product.stock_quantity < quantity or total_price > max_budget_rupees:
+            return None
+        margin_percent = round(((total_price - total_cost) / total_price) * 100.0, 2)
+        return OfferCandidate(
+            candidate_id=f"CAND-DIR-{uuid.uuid4().hex[:6].upper()}",
+            strategy=AllowedStrategy.DIRECT_MATCH,
+            explanation=f"Catalog offer for {quantity}x {requested_product.name}; no negotiated pricing required.",
+            items=[OfferItemDetail(
+                sku=requested_product.sku,
+                name=requested_product.name,
+                category=requested_product.category,
+                quantity=quantity,
+                unit_price_rupees=requested_product.selling_price_rupees,
+                total_price_rupees=total_price,
+                unit_cost_rupees=requested_product.cost_price_rupees,
+                total_cost_rupees=total_cost,
+                is_overstock=requested_product.is_overstock,
+            )],
+            total_price_rupees=total_price,
+            total_cost_rupees=total_cost,
+            margin_percent=margin_percent,
+            discount_percent=0.0,
+            overstock_items_count=0,
+            overstock_ratio=0.0,
+        )
+
+class BuyerRequestedDiscountGenerator:
+    """Materialize the buyer's exact discount request so policy can judge it."""
+
+    @staticmethod
+    def generate(
+        db: Session,
+        requested_product: Product,
+        quantity: int,
+        max_budget_rupees: int,
+        policy: MerchantPolicy,
+        requested_discount_percent: float,
+    ) -> Optional[OfferCandidate]:
+        if requested_product.stock_quantity < quantity:
+            return None
+        ratio = (Decimal("100") - Decimal(str(requested_discount_percent))) / Decimal("100")
+        unit_price = int((Decimal(requested_product.selling_price_rupees) * ratio).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        total_price = unit_price * quantity
+        total_cost = requested_product.cost_price_rupees * quantity
+        if unit_price <= 0 or total_price > max_budget_rupees:
+            return None
+        actual_discount = round(
+            (requested_product.selling_price_rupees - unit_price) / requested_product.selling_price_rupees * 100,
+            2,
+        )
+        margin = round((total_price - total_cost) / total_price * 100, 2)
+        return OfferCandidate(
+            candidate_id=f"CAND-REQ-{uuid.uuid4().hex[:6].upper()}",
+            strategy=AllowedStrategy.BUYER_REQUESTED_DISCOUNT,
+            explanation=(
+                f"Buyer requested {requested_discount_percent:g}% off. The exact candidate is "
+                "submitted to deterministic policy gates before it can become an offer."
+            ),
+            items=[OfferItemDetail(
+                sku=requested_product.sku, name=requested_product.name,
+                category=requested_product.category, quantity=quantity,
+                unit_price_rupees=unit_price, total_price_rupees=total_price,
+                unit_cost_rupees=requested_product.cost_price_rupees,
+                total_cost_rupees=total_cost, is_overstock=requested_product.is_overstock,
+            )],
+            total_price_rupees=total_price, total_cost_rupees=total_cost,
+            margin_percent=margin, discount_percent=actual_discount,
+            overstock_items_count=0, overstock_ratio=0.0,
+        )
+
+class RecoveryDiscountGenerator:
+    """Creates a deterministic post-rejection discount within merchant policy."""
+
+    @staticmethod
+    def generate(
+        db: Session,
+        requested_product: Product,
+        quantity: int,
+        max_budget_rupees: int,
+        policy: MerchantPolicy,
+        preferred_discount_percent: float = 5.0,
+    ) -> Optional[OfferCandidate]:
+        discount_percent = min(preferred_discount_percent, policy.max_discount_percent)
+        unit_price = int(requested_product.selling_price_rupees * (1 - discount_percent / 100.0))
+        total_price = unit_price * quantity
+        total_cost = requested_product.cost_price_rupees * quantity
+        if total_price > max_budget_rupees or total_price <= total_cost:
+            return None
+        margin_percent = round(((total_price - total_cost) / total_price) * 100.0, 2)
+        actual_discount = round(
+            ((requested_product.selling_price_rupees - unit_price) / requested_product.selling_price_rupees) * 100.0,
+            2,
+        )
+        return OfferCandidate(
+            candidate_id=f"CAND-REC-{uuid.uuid4().hex[:6].upper()}",
+            strategy=AllowedStrategy.VOLUME_DISCOUNT,
+            explanation=(
+                f"Applied a policy-capped {actual_discount}% recovery discount after buyer rejection; "
+                "all monetary values were calculated deterministically."
+            ),
+            items=[OfferItemDetail(
+                sku=requested_product.sku,
+                name=requested_product.name,
+                category=requested_product.category,
+                quantity=quantity,
+                unit_price_rupees=unit_price,
+                total_price_rupees=total_price,
+                unit_cost_rupees=requested_product.cost_price_rupees,
+                total_cost_rupees=total_cost,
+                is_overstock=requested_product.is_overstock,
+            )],
+            total_price_rupees=total_price,
+            total_cost_rupees=total_cost,
+            margin_percent=margin_percent,
+            discount_percent=actual_discount,
+            overstock_items_count=0,
+            overstock_ratio=0.0,
+        )
 
 class VolumeDiscountGenerator:
     """Generates a candidate offer with a volume price discount to fit the buyer's budget cap."""
@@ -28,7 +162,7 @@ class VolumeDiscountGenerator:
         target_unit_price = max_budget_rupees // quantity
 
         # Check maximum discount ceiling constraint from merchant policy
-        min_allowed_unit_price = int(requested_product.selling_price_rupees * (1 - policy.max_discount_percent / 100.0))
+        min_allowed_unit_price = math.ceil(requested_product.selling_price_rupees * (1 - policy.max_discount_percent / 100.0))
         discounted_unit_price = max(target_unit_price, min_allowed_unit_price)
 
         discounted_total_price = discounted_unit_price * quantity

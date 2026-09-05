@@ -3,10 +3,13 @@ from typing import List, Optional, Dict, Any
 from pydantic import BaseModel
 
 class AllowedStrategy(str, Enum):
+    BUYER_REQUESTED_DISCOUNT = "BUYER_REQUESTED_DISCOUNT"
     DIRECT_MATCH = "DIRECT_MATCH"
     VOLUME_DISCOUNT = "VOLUME_DISCOUNT"
     BUNDLE_OVERSTOCK = "BUNDLE_OVERSTOCK"
     PRODUCT_SUBSTITUTE = "PRODUCT_SUBSTITUTE"
+    QUANTITY_ADJUSTMENT = "QUANTITY_ADJUSTMENT"
+    DELIVERY_TRADEOFF = "DELIVERY_TRADEOFF"
 
 class OfferItemDetail(BaseModel):
     sku: str
